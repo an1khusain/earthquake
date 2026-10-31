@@ -93,4 +93,26 @@ void main() {
     c.setEndDate(DateTime(2023, 12, 1));
     expect(c.startDate, DateTime(2023, 12, 1));
   });
+
+  test('failed refresh keeps filters of the displayed results', () async {
+    var fail = false;
+    final c = createController(
+      () =>
+          fail
+              ? http.Response('Service unavailable', 503)
+              : http.Response(sampleGeoJson, 200),
+    );
+    c.onInit();
+    await Future<void>.delayed(Duration.zero);
+    expect(c.appliedFilters?.orderBy, 'time');
+
+    fail = true;
+    c.setOrder('magnitude');
+    await Future<void>.delayed(Duration.zero);
+
+    expect(c.orderBy, 'magnitude');
+    expect(c.appliedFilters?.orderBy, 'time');
+    expect(c.earthquakes, hasLength(2));
+    expect(c.errorMessage, startsWith('USGS returned 503'));
+  });
 }

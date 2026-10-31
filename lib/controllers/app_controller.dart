@@ -11,6 +11,18 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../utils/helper_function.dart';
 
+/// Filters used for the currently displayed results.
+typedef AppliedFilters =
+    ({
+      String orderBy,
+      double magnitude,
+      String startTime,
+      String endTime,
+      bool nearMe,
+      double radiusKm,
+      String? city,
+    });
+
 class AppController extends GetxController {
   AppController({http.Client? client}) : _client = client ?? http.Client();
 
@@ -37,6 +49,7 @@ class AppController extends GetxController {
   String? _currentCity;
 
   EarthquakeModel? earthQuakeModel;
+  AppliedFilters? _appliedFilters;
   bool _isLoading = false;
   String? _errorMessage;
   bool _filtersChanged = false;
@@ -56,6 +69,7 @@ class AppController extends GetxController {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
   bool get hasDataLoaded => earthQuakeModel != null;
+  AppliedFilters? get appliedFilters => _appliedFilters;
   List<Features> get earthquakes => earthQuakeModel?.features ?? const [];
 
   Map<String, String> get queryParams {
@@ -93,6 +107,15 @@ class AppController extends GetxController {
 
   Future<void> getEarthquakeData() async {
     final requestId = ++_requestId;
+    final AppliedFilters filters = (
+      orderBy: _orderBy,
+      magnitude: _magnitude,
+      startTime: startTime,
+      endTime: endTime,
+      nearMe: _shouldUseLocation,
+      radiusKm: _maxRadiusKm,
+      city: _currentCity,
+    );
     _isLoading = true;
     _errorMessage = null;
     _filtersChanged = false;
@@ -115,7 +138,10 @@ class AppController extends GetxController {
     }
 
     if (requestId != _requestId) return;
-    if (result != null) earthQuakeModel = result;
+    if (result != null) {
+      earthQuakeModel = result;
+      _appliedFilters = filters;
+    }
     _errorMessage = error;
     _isLoading = false;
     update();

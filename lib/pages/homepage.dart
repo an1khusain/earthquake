@@ -119,11 +119,11 @@ class _SummaryHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = controller;
+    final f = c.appliedFilters!;
     final count = c.earthquakes.length;
     final location =
-        c.shouldUseLocation
-            ? 'within ${c.maxRadiusKm.round()} km of '
-                '${c.currentCity ?? 'your location'}'
+        f.nearMe
+            ? 'within ${f.radiusKm.round()} km of ${f.city ?? 'your location'}'
             : 'worldwide';
     final theme = Theme.of(context);
     return Column(
@@ -135,7 +135,7 @@ class _SummaryHeader extends StatelessWidget {
             color: theme.colorScheme.errorContainer,
             padding: const EdgeInsets.all(12),
             child: Text(
-              c.errorMessage!,
+              '${c.errorMessage!}\nShowing the previous results.',
               style: TextStyle(color: theme.colorScheme.onErrorContainer),
             ),
           ),
@@ -143,8 +143,8 @@ class _SummaryHeader extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
           child: Text(
             '$count earthquake${count == 1 ? '' : 's'} '
-            '(M${c.magnitude.toStringAsFixed(1)}+) $location\n'
-            '${c.startTime} to ${c.endTime}  •  ${sortOptions[c.orderBy]}',
+            '(M${f.magnitude.toStringAsFixed(1)}+) $location\n'
+            '${f.startTime} to ${f.endTime}  •  ${sortOptions[f.orderBy]}',
             style: theme.textTheme.bodySmall,
           ),
         ),
