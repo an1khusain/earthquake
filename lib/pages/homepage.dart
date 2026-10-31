@@ -1,149 +1,184 @@
 import 'package:earthquake/controllers/app_controller.dart';
+import 'package:earthquake/pages/details_page.dart';
 import 'package:earthquake/pages/settings_page.dart';
-import 'package:earthquake/utils/helper_function.dart';
+import 'package:earthquake/widgets/earthquake_tile.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
-class Homepage extends StatefulWidget {
+const sortOptions = {
+  'time': 'Newest first',
+  'time-asc': 'Oldest first',
+  'magnitude': 'Strongest first',
+  'magnitude-asc': 'Weakest first',
+};
+
+class Homepage extends StatelessWidget {
   const Homepage({super.key});
 
   @override
-  State<Homepage> createState() => _HomepageState();
-}
-
-class _HomepageState extends State<Homepage> {
-  @override
   Widget build(BuildContext context) {
-    final AppController appController = Get.put(AppController());
+    final appController = Get.find<AppController>();
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Earthquake App'),
+        title: const Text('Earthquakes'),
         actions: [
-          IconButton(onPressed: getSortDialog, icon: Icon(Icons.sort)),
-          IconButton(onPressed: () {
-            Get.to(SettingsPage());
-          }, icon: Icon(Icons.settings)),
+          IconButton(
+            tooltip: 'Sort',
+            onPressed: () => _showSortDialog(context, appController),
+            icon: const Icon(Icons.sort),
+          ),
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: () async {
+              await Get.to(() => const SettingsPage());
+              appController.refreshIfFiltersChanged();
+            },
+            icon: const Icon(Icons.settings),
+          ),
         ],
       ),
       body: GetBuilder<AppController>(
-        builder:
-            (_) =>
-                appController.hasDataLoaded
-                    ? ListView.builder(
-                      itemCount:
-                          appController.earthQuakeModel!.features!.length,
-                      itemBuilder: (context, index) {
-                        final data =
-                            appController
-                                .earthQuakeModel!
-                                .features![index]
-                                .properties!;
-                        return ListTile(
-                          onTap: () {
-                            appController.openMap(data.place!);
-                          },
-                          title: Text(data.place ?? data.title ?? 'Unknown'),
-                          subtitle: Text(
-                            getFormatTime(
-                              data.time!,
-                              'EEE MMM dd yyyy hh:mm a',
-                            ),
-                          ),
-                          trailing: Chip(
-                            label: Text('${data.mag}'),
-                            avatar:
-                                data.alert == null
-                                    ? null
-                                    : CircleAvatar(
-                                      backgroundColor: appController
-                                          .getAlertColor(data.alert!),
-                                    ),
-                          ),
-                        );
-                      },
-                    )
-                    : Center(child: CircularProgressIndicator()),
+        builder: (c) {
+          if (!c.hasDataLoaded) {
+            if (c.errorMessage != null) {
+              return _ErrorView(
+                message: c.errorMessage!,
+                onRetry: c.getEarthquakeData,
+              );
+            }
+            return const Center(child: CircularProgressIndicator());
+          }
+          final items = c.earthquakes;
+          return RefreshIndicator(
+            onRefresh: c.getEarthquakeData,
+            child: ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              itemCount: items.isEmpty ? 2 : items.length + 1,
+              separatorBuilder:
+                  (_, i) =>
+                      i == 0
+                          ? const SizedBox.shrink()
+                          : const Divider(height: 1),
+              itemBuilder: (context, index) {
+                if (index == 0) return _SummaryHeader(controller: c);
+                if (items.isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Center(
+                      child: Text(
+                        'No earthquakes match your filters.\n'
+                        'Try a lower magnitude or a wider date range.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  );
+                }
+                final feature = items[index - 1];
+                return EarthquakeTile(
+                  feature: feature,
+                  onTap: () => Get.to(() => DetailsPage(feature: feature)),
+                );
+              },
+            ),
+          );
+        },
       ),
     );
   }
 
-  void getSortDialog() {
-    AppController appController = Get.find<AppController>();
+  void _showSortDialog(BuildContext context, AppController controller) {
     showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Sort by'),
-          content: GetBuilder<AppController>(builder: (_) => Column(
-            mainAxisSize: MainAxisSize.min,
+      context: context,
+      builder:
+          (context) => SimpleDialog(
+            title: const Text('Sort by'),
             children: [
-              RadioValue(
-                groupValue: appController.orderBy,
-                value: 'magnitude',
-                label: 'Magnitude-Desc',
-                onChange: (value) {
-                  appController.setOrder(value!);
-                  Navigator.pop(context);
-                },
-              ),
-              RadioValue(
-                groupValue: appController.orderBy,
-                value: 'magnitude-asc',
-                label: 'Magnitude-Asc',
-                onChange: (value) {
-                  appController.setOrder(value!);
-                  Navigator.pop(context);
-                },
-              ),
-              RadioValue(
-                groupValue: appController.orderBy,
-                value: 'time',
-                label: 'Time-Desc',
-                onChange: (value) {
-                  appController.setOrder(value!);
-                  Navigator.pop(context);
-                },
-              ),
-              RadioValue(
-                groupValue: appController.orderBy,
-                value: 'time-asc',
-                label: 'Time-Asc',
-                onChange: (value) {
-                  appController.setOrder(value!);
-                  Navigator.pop(context);
-                },
-              ),
+              for (final entry in sortOptions.entries)
+                ListTile(
+                  title: Text(entry.value),
+                  trailing:
+                      controller.orderBy == entry.key
+                          ? const Icon(Icons.check)
+                          : null,
+                  onTap: () {
+                    Navigator.pop(context);
+                    controller.setOrder(entry.key);
+                  },
+                ),
             ],
           ),
-          ),
-        ));
+    );
   }
 }
 
-class RadioValue extends StatelessWidget {
-  final String groupValue;
-  final String value;
-  final String label;
-  final Function(String?) onChange;
+class _SummaryHeader extends StatelessWidget {
+  final AppController controller;
 
-  const RadioValue({
-    super.key,
-    required this.groupValue,
-    required this.value,
-    required this.label,
-    required this.onChange,
-  });
+  const _SummaryHeader({required this.controller});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final c = controller;
+    final count = c.earthquakes.length;
+    final location =
+        c.shouldUseLocation
+            ? 'within ${c.maxRadiusKm.round()} km of '
+                '${c.currentCity ?? 'your location'}'
+            : 'worldwide';
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Radio<String>(
-          value: value,
-          groupValue: groupValue,
-          onChanged: onChange,
+        if (c.isLoading) const LinearProgressIndicator(),
+        if (c.errorMessage != null)
+          Container(
+            color: theme.colorScheme.errorContainer,
+            padding: const EdgeInsets.all(12),
+            child: Text(
+              c.errorMessage!,
+              style: TextStyle(color: theme.colorScheme.onErrorContainer),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Text(
+            '$count earthquake${count == 1 ? '' : 's'} '
+            '(M${c.magnitude.toStringAsFixed(1)}+) $location\n'
+            '${c.startTime} to ${c.endTime}  •  ${sortOptions[c.orderBy]}',
+            style: theme.textTheme.bodySmall,
+          ),
         ),
-        Text(label),
       ],
+    );
+  }
+}
+
+class _ErrorView extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+
+  const _ErrorView({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.cloud_off, size: 48),
+            const SizedBox(height: 12),
+            Text(message, textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
