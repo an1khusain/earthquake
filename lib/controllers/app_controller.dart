@@ -1,222 +1,287 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
-import 'dart:ui';
+
 import 'package:earthquake/models/earthquake_model.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' show DateUtils;
+import 'package:geocoding/geocoding.dart' as gc;
+import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
-import 'package:url_launcher/url_launcher_string.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../utils/helper_function.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart' as gc;
+
+/// Filters used for the currently displayed results.
+typedef AppliedFilters =
+    ({
+      String orderBy,
+      double magnitude,
+      String startTime,
+      String endTime,
+      bool nearMe,
+      double radiusKm,
+      String? city,
+    });
 
 class AppController extends GetxController {
-  final baseUrl = Uri.parse('https://earthquake.usgs.gov/fdsnws/event/1/query');
-  Map<String, dynamic> queryParams = {};
-  double _maxRadiusKm = 500;
-  String _startTime = '',
-      _endTime = '';
-  double _latitude = 0.0,
-      _longitude = 0.0;
-  String? _currentCity;
-  String _orderBy = 'time';
+  AppController({http.Client? client}) : _client = client ?? http.Client();
+
+  static final Uri baseUrl = Uri.parse(
+    'https://earthquake.usgs.gov/fdsnws/event/1/query',
+  );
+  static const int resultLimit = 50;
+  static const double minRadiusKm = 100;
+  static const double maxRadiusKmThreshold = 20000;
+  static const double minMagnitude = 0;
+  static const double maxMagnitude = 10;
+  static const Duration requestTimeout = Duration(seconds: 20);
+
+  final http.Client _client;
+
+  late DateTime _startDate;
+  late DateTime _endDate;
   double _magnitude = 4;
-  final double _maxRadiusKmThreshold = 20001.5;
-  EarthquakeModel? earthQuakeModel;
-
-  double get maxRadiusKmThreshold => _maxRadiusKmThreshold;
+  String _orderBy = 'time';
   bool _shouldUseLocation = false;
-  bool get shouldUseLocation => _shouldUseLocation;
+  double _maxRadiusKm = 500;
+  double _latitude = 0;
+  double _longitude = 0;
+  String? _currentCity;
 
-  double get maxRadiusKm => _maxRadiusKm;
+  EarthquakeModel? earthQuakeModel;
+  AppliedFilters? _appliedFilters;
+  bool _isLoading = false;
+  String? _errorMessage;
+  bool _filtersChanged = false;
+  int _requestId = 0;
 
-  String get startTime => _startTime;
-
-  get endTime => _endTime;
-
-  double get latitude => _latitude;
-
-  get longitude => _longitude;
-
+  DateTime get startDate => _startDate;
+  DateTime get endDate => _endDate;
+  String get startTime => formatDate(_startDate);
+  String get endTime => formatDate(_endDate);
   double get magnitude => _magnitude;
-
-  String? get currentCity => _currentCity;
-
   String get orderBy => _orderBy;
+  bool get shouldUseLocation => _shouldUseLocation;
+  double get maxRadiusKm => _maxRadiusKm;
+  double get latitude => _latitude;
+  double get longitude => _longitude;
+  String? get currentCity => _currentCity;
+  bool get isLoading => _isLoading;
+  String? get errorMessage => _errorMessage;
   bool get hasDataLoaded => earthQuakeModel != null;
+  AppliedFilters? get appliedFilters => _appliedFilters;
+  List<Features> get earthquakes => earthQuakeModel?.features ?? const [];
 
-  void setOrder(String value) {
-    _orderBy = value;
-    update();
-    _setQuaryParams();
-    getEarthquakeData();
-  }
-
-  _setQuaryParams() {
-    queryParams['format'] = 'geojson';
-    queryParams['starttime'] = _startTime;
-    queryParams['endtime'] = _endTime;
-    queryParams['minmagnitude'] = '$_magnitude';
-    queryParams['orderby'] = _orderBy;
-    queryParams['limit'] = '50';
-    queryParams['latitude'] = '$_latitude';
-    queryParams['longitude'] = '$_longitude';
-    queryParams['maxradiuskm'] = '$_maxRadiusKm';
+  Map<String, String> get queryParams {
+    final now = DateTime.now();
+    final endOfDay = DateTime(_endDate.year, _endDate.month, _endDate.day + 1);
+    return {
+      'format': 'geojson',
+      'starttime': toUsgsTime(_startDate),
+      'endtime': toUsgsTime(endOfDay.isAfter(now) ? now : endOfDay),
+      'minmagnitude': '$_magnitude',
+      'orderby': _orderBy,
+      'limit': '$resultLimit',
+      if (_shouldUseLocation) ...{
+        'latitude': '$_latitude',
+        'longitude': '$_longitude',
+        'maxradiuskm': '$_maxRadiusKm',
+      },
+    };
   }
 
   @override
   void onInit() {
     super.onInit();
-    _startTime = getFormatTime(
-      DateTime
-          .now()
-          .subtract(const Duration(days: 10))
-          .millisecondsSinceEpoch,
-    );
-    _endTime = getFormatTime(
-      DateTime
-          .now()
-          .millisecondsSinceEpoch,
-    );
-    _maxRadiusKm = _maxRadiusKmThreshold;
-    _setQuaryParams();
+    final today = DateUtils.dateOnly(DateTime.now());
+    _startDate = today.subtract(const Duration(days: 10));
+    _endDate = today;
     getEarthquakeData();
   }
 
-
-  Color getAlertColor(String color) {
-    return switch(color) {
-      'green' => Colors.green,
-      'yellow' => Colors.yellow,
-      'orange' => Colors.orange,
-      _ => Colors.red,
-    };
+  @override
+  void onClose() {
+    _client.close();
+    super.onClose();
   }
 
   Future<void> getEarthquakeData() async {
-    final uri = Uri.https(baseUrl.authority, baseUrl.path, queryParams);
-    print(uri);
+    final requestId = ++_requestId;
+    final AppliedFilters filters = (
+      orderBy: _orderBy,
+      magnitude: _magnitude,
+      startTime: startTime,
+      endTime: endTime,
+      nearMe: _shouldUseLocation,
+      radiusKm: _maxRadiusKm,
+      city: _currentCity,
+    );
+    _isLoading = true;
+    _errorMessage = null;
+    _filtersChanged = false;
+    update();
+
+    String? error;
+    EarthquakeModel? result;
     try {
-      final response = await http.get(uri);
-      print(response.toString());
-      if(response.statusCode == 200) {
-        final json = jsonDecode(response.body);
-        earthQuakeModel = EarthquakeModel.fromJson(json);
-        print(earthQuakeModel!.features!.length);
-        update();
+      final uri = Uri.https(baseUrl.authority, baseUrl.path, queryParams);
+      final response = await _client.get(uri).timeout(requestTimeout);
+      if (response.statusCode == 200) {
+        result = EarthquakeModel.fromJson(jsonDecode(response.body));
+      } else {
+        error = _serverError(response);
       }
-    }catch(error) {
-      print(error.toString());
+    } on TimeoutException {
+      error = 'The request timed out. Please try again.';
+    } catch (_) {
+      error = 'Could not load earthquakes. Check your internet connection.';
     }
-  }
 
-  void setStartDate(String dt) {
-    _startTime = dt;
-    _setQuaryParams();
+    if (requestId != _requestId) return;
+    if (result != null) {
+      earthQuakeModel = result;
+      _appliedFilters = filters;
+    }
+    _errorMessage = error;
+    _isLoading = false;
     update();
   }
 
-  void setEndDate(String dt) {
-    _endTime = dt;
-    _setQuaryParams();
-    update();
+  String _serverError(http.Response response) {
+    final body = response.body.trim();
+    final firstLine = body.isEmpty ? '' : body.split('\n').first;
+    return 'USGS returned ${response.statusCode}'
+        '${firstLine.isEmpty ? '' : ': $firstLine'}';
   }
 
-  void setMagnitude(double newMag) {
-    _magnitude = newMag;
-    update();
-    _setQuaryParams();
+  /// Refetches only if a filter was changed since the last request.
+  Future<void> refreshIfFiltersChanged() async {
+    if (_filtersChanged) await getEarthquakeData();
   }
 
-  void setMaxRadius(double newRadius) {
-    _maxRadiusKm = newRadius;
-    update();
-    _setQuaryParams();
+  void setOrder(String value) {
+    if (value == _orderBy) return;
+    _orderBy = value;
+    getEarthquakeData();
   }
 
-  Future<void> setLocation(bool value) async {
-    _shouldUseLocation = value;
-    update();
-    if(value) {
+  void setStartDate(DateTime date) {
+    _startDate = DateUtils.dateOnly(date);
+    if (_startDate.isAfter(_endDate)) _endDate = _startDate;
+    _markChanged();
+  }
+
+  void setEndDate(DateTime date) {
+    _endDate = DateUtils.dateOnly(date);
+    if (_endDate.isBefore(_startDate)) _startDate = _endDate;
+    _markChanged();
+  }
+
+  void setMagnitude(double value) {
+    _magnitude = value.clamp(minMagnitude, maxMagnitude).toDouble();
+    _markChanged();
+  }
+
+  void setMaxRadius(double value) {
+    _maxRadiusKm =
+        value.clamp(minRadiusKm, maxRadiusKmThreshold).roundToDouble();
+    _markChanged();
+  }
+
+  /// Returns an error message when the location could not be determined.
+  Future<String?> setLocation(bool value) async {
+    if (!value) {
+      _shouldUseLocation = false;
+      _latitude = 0;
+      _longitude = 0;
+      _currentCity = null;
+      _markChanged();
+      return null;
+    }
+    try {
       final position = await _determinePosition();
       _latitude = position.latitude;
       _longitude = position.longitude;
-      await getLocation();
-      _maxRadiusKm = 500;
-      _setQuaryParams();
-    } else {
-      _latitude = 0.0;
-      _longitude = 0.0;
-      _maxRadiusKm = _maxRadiusKmThreshold;
-      _currentCity = null;
-      _setQuaryParams();
+      _shouldUseLocation = true;
+      await _resolveCity();
+      _markChanged();
+      return null;
+    } catch (error) {
+      _shouldUseLocation = false;
+      update();
+      return error.toString();
     }
   }
 
-  void openMap(String address) async {
-    String url = '';
-    if(Platform.isAndroid) {
-      url = 'geo:0,0?q=$address';
-    } else {
-      url = 'http://maps.apple.com/?q=$address';
-    }
-    if (await canLaunchUrlString(url)) {
-      launchUrlString(url);
-    } else {
-      Get.snackbar('Not found !!!', 'Cant perform this operation');
-    }
+  void _markChanged() {
+    _filtersChanged = true;
+    update();
   }
 
-  Future<void> getLocation() async {
-    try{
-      final placeMarkList = await gc.placemarkFromCoordinates(_latitude, _longitude);
-      if(placeMarkList.isNotEmpty) {
-        final placeMark = placeMarkList.first;
-        _currentCity = placeMark.locality;
-        update();
+  Future<void> _resolveCity() async {
+    try {
+      final placeMarks = await gc.placemarkFromCoordinates(
+        _latitude,
+        _longitude,
+      );
+      if (placeMarks.isNotEmpty) {
+        final p = placeMarks.first;
+        _currentCity = [
+          p.locality,
+          p.administrativeArea,
+          p.country,
+        ].firstWhereOrNull((e) => e != null && e.isNotEmpty);
       }
-    }catch(error){
-      print(error);
+    } catch (_) {
+      // Reverse geocoding is unavailable on some platforms (e.g. web).
+      _currentCity = null;
     }
   }
-  /// Determine the current position of the device.
-  ///
-  /// When the location services are not enabled or permissions
-  /// are denied the `Future` will return an error.
-  Future<Position> _determinePosition() async {
-    bool serviceEnabled;
-    LocationPermission permission;
 
-    // Test if location services are enabled.
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      // Location services are not enabled don't continue
-      // accessing the position and request users of the
-      // App to enable the location services.
-      return Future.error('Location services are disabled.');
+  Future<void> openMap(Features feature) async {
+    final coords = feature.geometry?.coordinates;
+    final query =
+        coords != null && coords.length >= 2
+            ? '${coords[1]},${coords[0]}'
+            : feature.properties?.place ?? '';
+    await openUrl(
+      Uri.https('www.google.com', '/maps/search/', {
+        'api': '1',
+        'query': query,
+      }).toString(),
+    );
+  }
+
+  Future<void> openUrl(String? url) async {
+    final uri = url == null ? null : Uri.tryParse(url);
+    var launched = false;
+    if (uri != null) {
+      try {
+        launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {
+        launched = false;
+      }
     }
+    if (!launched) {
+      Get.snackbar('Not available', 'Could not open this link.');
+    }
+  }
 
-    permission = await Geolocator.checkPermission();
+  Future<Position> _determinePosition() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      throw 'Location services are disabled.';
+    }
+    var permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
-        // Permissions are denied, next time you could try
-        // requesting permissions again (this is also where
-        // Android's shouldShowRequestPermissionRationale
-        // returned true. According to Android guidelines
-        // your App should show an explanatory UI now.
-        return Future.error('Location permissions are denied');
+        throw 'Location permission was denied.';
       }
     }
-
     if (permission == LocationPermission.deniedForever) {
-      // Permissions are denied forever, handle appropriately.
-      return Future.error(
-          'Location permissions are permanently denied, we cannot request permissions.');
+      throw 'Location permission is permanently denied. '
+          'Enable it in the system settings.';
     }
-
-    // When we reach here, permissions are granted and we can
-    // continue accessing the position of the device.
-    return await Geolocator.getCurrentPosition();
+    return Geolocator.getCurrentPosition();
   }
 }

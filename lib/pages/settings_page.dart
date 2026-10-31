@@ -1,138 +1,112 @@
 import 'package:earthquake/controllers/app_controller.dart';
-import 'package:earthquake/pages/homepage.dart';
-import 'package:earthquake/utils/helper_function.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:get/get.dart';
 
-class SettingsPage extends StatefulWidget {
+class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
   @override
-  State<SettingsPage> createState() => _SettingsPageState();
-}
-
-class _SettingsPageState extends State<SettingsPage> {
-  @override
   Widget build(BuildContext context) {
-    final AppController appController = Get.find<AppController>();
+    final titleStyle = Theme.of(context).textTheme.titleMedium;
     return Scaffold(
-      appBar: AppBar(title: Text('Settings Page'), centerTitle: true),
+      appBar: AppBar(title: const Text('Settings'), centerTitle: true),
       body: GetBuilder<AppController>(
         builder:
-            (_) => ListView(
-              padding: EdgeInsets.all(10),
+            (c) => ListView(
+              padding: const EdgeInsets.all(12),
               children: [
-                Text(
-                  'Time Setting',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
+                Text('Date range', style: titleStyle),
                 Card(
                   child: Column(
                     children: [
                       ListTile(
-                        title: Text('Start Time'),
-                        subtitle: Text(appController.startTime),
-                        trailing: IconButton(
-                          onPressed: () async {
-                            final dt = await _datePicker();
-                            if (dt != null) {
-                              appController.setStartDate(dt);
-                            }
-                          },
-                          icon: Icon(Icons.calendar_month),
-                        ),
-                      ), // set start Time
+                        title: const Text('Start date'),
+                        subtitle: Text(c.startTime),
+                        trailing: const Icon(Icons.calendar_month),
+                        onTap: () async {
+                          final date = await _pickDate(context, c.startDate);
+                          if (date != null) c.setStartDate(date);
+                        },
+                      ),
                       ListTile(
-                        title: Text('End Time'),
-                        subtitle: Text(appController.endTime),
-                        trailing: IconButton(
-                          onPressed: () async {
-                            final dt = await _datePicker();
-                            if (dt != null) {
-                              appController.setEndDate(dt);
-                            }
-                          },
-                          icon: Icon(Icons.calendar_month),
-                        ),
+                        title: const Text('End date'),
+                        subtitle: Text(c.endTime),
+                        trailing: const Icon(Icons.calendar_month),
+                        onTap: () async {
+                          final date = await _pickDate(context, c.endDate);
+                          if (date != null) c.setEndDate(date);
+                        },
                       ),
                     ],
                   ),
                 ),
+                const SizedBox(height: 12),
                 Text(
-                  'Location Setting',
-                  style: Theme.of(context).textTheme.titleMedium,
+                  'Minimum magnitude: ${c.magnitude.toStringAsFixed(1)}',
+                  style: titleStyle,
                 ),
+                Slider(
+                  value: c.magnitude,
+                  min: AppController.minMagnitude,
+                  max: AppController.maxMagnitude,
+                  divisions: 20,
+                  label: c.magnitude.toStringAsFixed(1),
+                  onChanged: c.setMagnitude,
+                ),
+                const SizedBox(height: 12),
+                Text('Location', style: titleStyle),
                 Card(
                   child: SwitchListTile(
-                    value: appController.shouldUseLocation,
-                    title: Text(
-                      appController.currentCity ?? 'Your Location Unknown',
+                    value: c.shouldUseLocation,
+                    title: const Text('Only earthquakes near me'),
+                    subtitle: Text(
+                      c.shouldUseLocation
+                          ? 'Near ${c.currentCity ?? '${c.latitude.toStringAsFixed(2)}, '
+                                  '${c.longitude.toStringAsFixed(2)}'}'
+                          : 'Showing earthquakes worldwide',
                     ),
-                    subtitle:
-                        appController.currentCity == null
-                            ? null
-                            : Text(
-                              'Your Location within ${appController.maxRadiusKm} km from your city ${appController.currentCity}',
-                            ),
                     onChanged: (value) async {
-                      EasyLoading.show(status: 'Getting your Location.....');
-                      await appController.setLocation(value);
+                      if (value) {
+                        EasyLoading.show(status: 'Getting your location...');
+                      }
+                      final error = await c.setLocation(value);
                       EasyLoading.dismiss();
+                      if (error != null) {
+                        Get.snackbar(
+                          'Location unavailable',
+                          error,
+                          snackPosition: SnackPosition.BOTTOM,
+                        );
+                      }
                     },
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Text(
-                    'Select Magnitude',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
+                const SizedBox(height: 12),
+                Text(
+                  'Search radius: ${c.maxRadiusKm.round()} km',
+                  style: titleStyle,
                 ),
-                Padding(
-                  padding: EdgeInsets.all(4),
-                  child: Slider(
-                    value: appController.magnitude,
-                    onChanged: (newMag) {
-                      appController.setMagnitude(newMag);
-                    },
-                    min: 3,
-                    max: 10,
-                    divisions: 7,
-                    label: appController.magnitude.round().toString(),
-                  ),
+                Slider(
+                  value: c.maxRadiusKm,
+                  min: AppController.minRadiusKm,
+                  max: AppController.maxRadiusKmThreshold,
+                  divisions: 199,
+                  label: '${c.maxRadiusKm.round()} km',
+                  onChanged: c.shouldUseLocation ? c.setMaxRadius : null,
                 ),
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Text(
-                    'Select Radius',
-                    style: Theme.of(context).textTheme.titleMedium,
+                if (!c.shouldUseLocation)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'Turn on "near me" to limit the search radius.',
+                    ),
                   ),
-                ),
-                Padding(
-                  padding: EdgeInsets.all(4),
-                  child: Slider(
-                    value: appController.maxRadiusKm,
-                    onChanged: (newRadius) {
-                      appController.setMaxRadius(newRadius);
-                    },
-                    min: 500,
-                    max: appController.maxRadiusKmThreshold,
-                    divisions: 5,
-                    label: appController.maxRadiusKm.round().toString(),
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    appController.getEarthquakeData();
-                    Get.snackbar(
-                      'Changes are successfully!',
-                      'Information updated',
-                      snackPosition: SnackPosition.BOTTOM,
-                    );
-                    Get.offAll(Homepage());
-                  },
-                  child: Text('Update'),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: Get.back,
+                  icon: const Icon(Icons.check),
+                  label: const Text('Apply'),
                 ),
               ],
             ),
@@ -140,16 +114,12 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Future<String?> _datePicker() async {
-    final date = await showDatePicker(
+  Future<DateTime?> _pickDate(BuildContext context, DateTime initial) {
+    return showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(2020),
+      initialDate: initial,
+      firstDate: DateTime(1900),
       lastDate: DateTime.now(),
     );
-    if (date != null) {
-      return getFormatTime(date.millisecondsSinceEpoch);
-    }
-    return null;
   }
 }
